@@ -1,0 +1,78 @@
+# ASP.NET Core (.NET Framework)
+# Build and test ASP.NET Core projects targeting the full .NET Framework.
+# Add steps that publish symbols, save build artifacts, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/languages/dotnet-core
+
+trigger:
+- master
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  solution: '**/*.sln'
+  buildPlatform: 'Any CPU'
+  buildConfiguration: 'Release'
+  AzureSubscription: 'AzureServiceConnection' # Name of the Service Connection
+  ApiName: 'customerapi'
+  ClusterResourceGroup: MicroserviceDemo  
+  ChartPackage: '$(Build.ArtifactStagingDirectory)/$(ApiName)-$(Build.BuildNumber).tgz'  
+  ChartPath: 'CustomerApi/CustomerApi/charts/$(ApiName)'
+  HelmVersion: 3.5.0
+  ImageName: 'wolfgangofner/$(ApiName):$(Build.BuildNumber)'
+  K8sNamespace: '$(ApiName)-test'
+  KubernetesCluster: 'microservice-aks'
+
+steps:
+
+- task: HelmInstaller@0
+  displayName: 'Install Helm $(HelmVersion)'
+  inputs:
+    helmVersion: $(HelmVersion)
+    checkLatestHelmVersion: false
+    installKubectl: true
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))   
+
+- task: HelmDeploy@0
+  displayName: 'helm package'
+  inputs:
+    azureSubscriptionEndpoint: $(AzureSubscription)
+    azureResourceGroup: $(ClusterResourceGroup)
+    kubernetesCluster: $(KubernetesCluster)
+    command: 'package'
+    chartPath: $(ChartPath)
+    chartVersion: $(Build.BuildNumber)
+    save: false
+    namespace: '$(K8sNamespace)'
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest')) 
+- task: HelmDeploy@0
+  displayName: 'Helm upgrade release'
+  inputs:
+    connectionType: 'Azure Resource Manager'
+    azureSubscription: $(AzureSubscription)
+    azureResourceGroup: '$(ClusterResourceGroup)'
+    kubernetesCluster: '$(KubernetesCluster)'
+    useClusterAdmin: true
+    namespace: '$(K8sNamespace)'
+    command: 'upgrade'
+    chartType: 'FilePath'
+    chartPath: '$(ChartPackage)'
+    releaseName: '$(ApiName)-$(K8sNamespace)'  
+    arguments: '--create-namespace'
+- task: NuGetToolInstaller@1
+
+- task: NuGetCommand@2
+  inputs:
+    restoreSolution: '$(solution)'
+
+- task: VSBuild@1
+  inputs:
+    solution: '$(solution)'
+    msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:DesktopBuildPackageLocation="$(build.artifactStagingDirectory)\WebApp.zip" /p:DeployIisAppPath="Default Web Site"'
+    platform: '$(buildPlatform)'
+    configuration: '$(buildConfiguration)'
+
+- task: VSTest@2
+  inputs:
+    platform: '$(buildPlatform)'
+    configuration: '$(buildConfiguration)'
